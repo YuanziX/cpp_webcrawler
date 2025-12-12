@@ -37,17 +37,10 @@ void Crawler::crawl(const std::string &startUrl, int maxDepth)
     // store maxdepth for workers
     maxDepth_ = maxDepth;
 
-    // wait for all work to complete
-    while (true)
-    {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-        std::lock_guard<std::mutex> lock(queueMutex_);
-        if (taskQueue_.empty() && activeWorkers_ == 0)
-        {
-            break;
-        }
-    }
+    // wait for all work to complete using condition variable
+    std::unique_lock<std::mutex> lock(queueMutex_);
+    condition_.wait(lock, [this]
+                    { return taskQueue_.empty() && activeWorkers_ == 0; });
 }
 
 size_t Crawler::getCrawledCount() const
@@ -57,6 +50,9 @@ size_t Crawler::getCrawledCount() const
 
 void Crawler::workerThread()
 {
+    // One client per thread
+    HttpClient client;
+
     while (true)
     {
         CrawlTask task("", -1);
@@ -81,8 +77,22 @@ void Crawler::workerThread()
 
         if (task.depth >= 0)
         {
-            processUrl(task.url, task.depth, maxDepth_);
-            activeWorkers_--;
+            // raii guard to ensure activeWorkers_ is decremented even on exception
+            struct WorkerGuard
+            {
+                std::atomic<int> &counter;
+                std::condition_variable &cv;
+                std::mutex &mutex;
+                WorkerGuard(std::atomic<int> &c, std::condition_variable &v, std::mutex &m) : counter(c), cv(v), mutex(m) {}
+                ~WorkerGuard()
+                {
+                    counter--;
+                    std::lock_guard<std::mutex> lock(mutex);
+                    cv.notify_all();
+                }
+            } guard(activeWorkers_, condition_, queueMutex_);
+
+            processUrl(task.url, task.depth, client);
         }
     }
 }
@@ -116,11 +126,10 @@ bool Crawler::shouldCrawl(const std::string &url)
     return url.find("http://") == 0 || url.find("https://") == 0;
 }
 
-void Crawler::processUrl(const std::string &url, int currentDepth, int maxDepth)
+void Crawler::processUrl(const std::string &url, int currentDepth, HttpClient &client)
 {
     std::cout << "[Depth " << currentDepth << "] Crawling: " << url << std::endl;
 
-    HttpClient client;
     std::string html = client.fetch(url);
 
     if (html.empty())

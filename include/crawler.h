@@ -31,7 +31,7 @@ private:
     void workerThread();
     void addTask(const std::string &url, int depth);
     bool shouldCrawl(const std::string &url);
-    void processUrl(const std::string &url, int currentDepth, int maxDepth);
+    void processUrl(const std::string &url, int currentDepth, class HttpClient &client);
 
     std::vector<std::thread> workers_;
     std::queue<CrawlTask> taskQueue_;
